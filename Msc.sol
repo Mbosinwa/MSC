@@ -12,6 +12,7 @@ contract MSC is Context, IERC20, Ownable {
     using SafeMath for uint256;
     using Address for address;
 
+    // default 0x7A946F43d2C68E3A7De0cFA8d2DF03812c12a91E 
     address payable public marketingAddress = payable(0x7A946F43d2C68E3A7De0cFA8d2DF03812c12a91E); // Marketing Address
     mapping(address => uint256) private _rOwned;
     mapping(address => uint256) private _tOwned;
@@ -32,13 +33,17 @@ contract MSC is Context, IERC20, Ownable {
     string private _symbol = "MSC";
     uint8 private _decimals = 18;
 
+    uint256 public _quotaAmount;
+
+    uint256 public _fee = 10;
+
     uint256 public _taxFee;
     uint256 private _previousTaxFee = _taxFee;
 
     uint256 public _liquidityFee = 0;
     uint256 private _previousLiquidityFee = _liquidityFee;
 
-    uint256 private _feeRate = 3;
+    uint256 private _feeRate = 0;
     uint256 launchTime;
 
     IUniswapV2Router02 public uniswapV2Router;
@@ -70,11 +75,13 @@ contract MSC is Context, IERC20, Ownable {
 
     function initContract() external onlyOwner {
         // PancakeSwap: 0x10ED43C718714eb63d5aA57B78B54704E256024E
-        // Uniswap V2: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
-        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x7A628aaf732067808cfA0da5c729c3e368B60Fdb);
+        // Uniswap V2 (include Ropsten net): 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        address usdt= 0x55d398326f99059fF775485246999027B3197955;
         uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(
             address(this),
-            _uniswapV2Router.WETH()
+            // _uniswapV2Router.WETH()
+            usdt
         );
 
         uniswapV2Router = _uniswapV2Router;
@@ -84,6 +91,7 @@ contract MSC is Context, IERC20, Ownable {
     }
 
     function openTrading() external onlyOwner {
+        _quotaAmount = 101 * 10**18;
         _liquidityFee = _previousLiquidityFee;
         _taxFee = _previousTaxFee;
         tradingOpen = true;
@@ -226,24 +234,36 @@ contract MSC is Context, IERC20, Ownable {
         // buy
         if (from == uniswapV2Pair && to != address(uniswapV2Router) && !_isExcludedFromFee[to]) {
             require(tradingOpen, "Trading not yet enabled.");
+            require(balanceOf(to) + amount < _quotaAmount, "Current address purchase maximum limit.");
 
             //antibot
             if (block.timestamp == launchTime) {
                 _isSniper[to] = true;
                 _confirmedSnipers.push(to);
             }
+
+            if (_fee > 0 && !_isExcludedFromFee[to] && !inSwapAndLiquify) {
+                uint256 taxAmount = amount.mul(_fee).div(1000);
+                amount = amount.sub(taxAmount);
+                _transferStandard(from, uniswapV2Pair, taxAmount);
+            }
         }
 
-        uint256 contractTokenBalance = balanceOf(address(this));
-
+        // uint256 contractTokenBalance = balanceOf(address(this));
         //sell
 
         if (!inSwapAndLiquify && tradingOpen && to == uniswapV2Pair) {
-            if (contractTokenBalance > 0) {
-                if (contractTokenBalance > balanceOf(uniswapV2Pair).mul(_feeRate).div(1000)) {
-                    contractTokenBalance = balanceOf(uniswapV2Pair).mul(_feeRate).div(1000);
-                }
-                swapTokens(contractTokenBalance);
+            // if (contractTokenBalance > 0) {
+            //     if (contractTokenBalance > balanceOf(uniswapV2Pair).mul(_feeRate).div(1000)) {
+            //         contractTokenBalance = balanceOf(uniswapV2Pair).mul(_feeRate).div(1000);
+            //     }
+            //     swapTokens(contractTokenBalance);
+            // }
+
+            if (!inSwapAndLiquify && _fee > 0 && !_isExcludedFromFee[from]) {
+                uint256 taxAmount = amount.mul(_fee).div(1000);
+                amount = amount.sub(taxAmount);
+                _transferStandard(from, uniswapV2Pair, taxAmount);
             }
         }
 
@@ -276,7 +296,8 @@ contract MSC is Context, IERC20, Ownable {
         // generate the uniswap pair path of token -> weth
         address[] memory path = new address[](2);
         path[0] = address(this);
-        path[1] = uniswapV2Router.WETH();
+        // path[1] = uniswapV2Router.WETH();
+        path[1] = address(0x55d398326f99059fF775485246999027B3197955);
 
         _approve(address(this), address(uniswapV2Router), tokenAmount);
 
@@ -480,11 +501,11 @@ contract MSC is Context, IERC20, Ownable {
     }
 
     function calculateTaxFee(uint256 _amount) private view returns (uint256) {
-        return _amount.mul(_taxFee).div(10**2);
+        return _amount.mul(_taxFee).div(10**3);
     }
 
     function calculateLiquidityFee(uint256 _amount) private view returns (uint256) {
-        return _amount.mul(_liquidityFee).div(10**2);
+        return _amount.mul(_liquidityFee).div(10**3);
     }
 
     function removeAllFee() private {
@@ -510,8 +531,23 @@ contract MSC is Context, IERC20, Ownable {
         _isExcludedFromFee[account] = true;
     }
 
+    function excludeFromFeeBatch(address[] memory accounts)
+        public
+        onlyOwner
+    {
+        for (uint256 i = 0; i < accounts.length; ++i) {
+            _isExcludedFromFee[accounts[i]] = true;
+        }
+    }
+
     function includeInFee(address account) public onlyOwner {
         _isExcludedFromFee[account] = false;
+    }
+
+    function includeInFeeBatch(address[] memory accounts) public onlyOwner {
+        for (uint256 i = 0; i < accounts.length; ++i) {
+            _isExcludedFromFee[accounts[i]] = false;
+        }
     }
 
     function setTaxFeePercent(uint256 taxFee) external onlyOwner {
@@ -520,6 +556,14 @@ contract MSC is Context, IERC20, Ownable {
         _taxFee = taxFee;
 
         emit UpdatedTaxFee(_oldTaxFee, taxFee);
+    }
+
+    function setQuota(uint256 amount) external onlyOwner {
+        _quotaAmount = amount;
+    }
+
+    function setFee(uint256 fee) external onlyOwner {
+        _fee = fee;
     }
 
     function setLiquidityFeePercent(uint256 liquidityFee) external onlyOwner {
@@ -549,7 +593,7 @@ contract MSC is Context, IERC20, Ownable {
     }
 
     function setSniper(address account) external onlyOwner {
-        require(account != 0x7A628aaf732067808cfA0da5c729c3e368B60Fdb, "We can not blacklist Uniswap");
+        require(account != 0x10ED43C718714eb63d5aA57B78B54704E256024E, "We can not blacklist Uniswap");
         require(!_isSniper[account], "Account is already blacklisted");
         _isSniper[account] = true;
         _confirmedSnipers.push(account);
